@@ -1,0 +1,53 @@
+services:
+  nextcloud-aio-mastercontainer:
+    image: nextcloud/all-in-one:latest
+    init: true
+    restart: always
+    container_name: nextcloud-aio-mastercontainer
+    volumes:
+      - ./config/mastercontainer:/mnt/docker-aio-config  # Changed to local path
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./config/mastercontainer:/mnt/docker-aio-config
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - type: volume
+        source: nextcloud_smb
+        target: /mnt/ncdata
+        volume:
+            nocopy: true
+    networks:
+      - nextcloud_network
+    ports:
+      - 8080:8080
+    environment:
+      APACHE_PORT: 11000
+      APACHE_IP_BINDING: 0.0.0.0
+      APACHE_ADDITIONAL_NETWORK: nextcloud_network
+      SKIP_DOMAIN_VALIDATION: "true"
+
+  nginx-proxy-manager:
+    image: 'jc21/nginx-proxy-manager:latest'
+    container_name: nginx-proxy-manager
+    restart: always
+    ports:
+      - '80:80'
+      - '443:443'
+      - '81:81'
+    volumes:
+      - ./config/npm/data:/data  # Changed to local path
+      - ./config/npm/letsencrypt:/etc/letsencrypt  # Changed to local path
+    networks:
+      - nextcloud_network
+    depends_on:
+      - nextcloud-aio-mastercontainer
+
+networks:
+  nextcloud_network:
+    name: nextcloud_network
+    external: true
+volumes:
+  nextcloud_smb:
+    driver: local
+    driver_opts:
+      type: cifs
+      o: "username=${SMB_USERNAME},password=${SMB_PASSWORD},uid=33,gid=33,file_mode=0770,dir_mode=0770"
+      device: "//PK-DESKTOP-1/NextcloudShare"
