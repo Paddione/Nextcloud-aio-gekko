@@ -1,0 +1,47 @@
+services:
+  # Main Nextcloud container
+  nextcloud-aio-mastercontainer:
+    image: nextcloud/all-in-one:latest
+    init: true
+    restart: always
+    container_name: nextcloud-aio-mastercontainer
+    volumes:
+      - nextcloud_aio_mastercontainer:/mnt/docker-aio-config
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - nextcloud_network
+    ports:
+      - 8080:8080
+    environment:
+      APACHE_PORT: 11000
+      APACHE_IP_BINDING: 0.0.0.0
+      APACHE_ADDITIONAL_NETWORK: nextcloud_network  # This tells AIO to connect Apache to our network
+      SKIP_DOMAIN_VALIDATION: "true"
+
+  # Nginx Proxy Manager configuration
+  nginx-proxy-manager:
+    image: 'jc21/nginx-proxy-manager:latest'
+    container_name: nginx-proxy-manager
+    restart: always
+    ports:
+      - '80:80'
+      - '443:443'
+      - '81:81'
+    volumes:
+      - npm_data:/data
+      - npm_letsencrypt:/etc/letsencrypt
+    networks:
+      - nextcloud_network
+    depends_on:
+      - nextcloud-aio-mastercontainer
+
+networks:
+  nextcloud_network:
+    name: nextcloud_network
+    external: true  # Creates the network if it doesn't exist
+
+volumes:
+  nextcloud_aio_mastercontainer:
+    name: nextcloud_aio_mastercontainer
+  npm_data:
+  npm_letsencrypt:
