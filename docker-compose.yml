@@ -5,15 +5,13 @@ services:
     restart: always
     container_name: nextcloud-aio-mastercontainer
     volumes:
-      - ./config/mastercontainer:/mnt/docker-aio-config  # Changed to local path
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./config/mastercontainer:/mnt/docker-aio-config
+      - type: volume
+        source: nextcloud_aio_mastercontainer
+        target: /mnt/docker-aio-config    # Using the required named volume
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - type: volume
         source: nextcloud_smb
-        target: /mnt/ncdata
-        volume:
-            nocopy: true
+        target: /mnt/ncdata               # Correct path inside the container
     networks:
       - nextcloud_network
     ports:
@@ -33,8 +31,8 @@ services:
       - '443:443'
       - '81:81'
     volumes:
-      - ./config/npm/data:/data  # Changed to local path
-      - ./config/npm/letsencrypt:/etc/letsencrypt  # Changed to local path
+      - ./config/npm/data:/data
+      - ./config/npm/letsencrypt:/etc/letsencrypt
     networks:
       - nextcloud_network
     depends_on:
@@ -44,10 +42,13 @@ networks:
   nextcloud_network:
     name: nextcloud_network
     external: true
+
 volumes:
+  nextcloud_aio_mastercontainer:    # This creates the required named volume
+    name: nextcloud_aio_mastercontainer
   nextcloud_smb:
     driver: local
     driver_opts:
       type: cifs
       o: "username=${SMB_USERNAME},password=${SMB_PASSWORD},uid=33,gid=33,file_mode=0770,dir_mode=0770"
-      device: "//PK-DESKTOP-1/NextcloudShare"
+      device: "//10.10.0.3/NextcloudShare"
