@@ -1,0 +1,204 @@
+#cloud-config
+fqdn: site.example.com
+hostname: site.example.com
+locale: en_GB.UTF-8
+timezone: Europe/London
+
+# Package management
+package_update: true
+package_upgrade: true
+package_reboot_if_required: true
+
+packages:
+  - wireguard
+  - ufw
+  - nano
+  # K3s dependencies and useful tools
+  - curl
+  - open-iscsi
+  - nfs-common
+  - jq
+  - apt-transport-https
+  - ca-certificates
+  - software-properties-common
+  - python3-pip
+  - gnupg
+  - lsb-release
+  - net-tools
+  - iptables
+  - linux-modules-extra-$(uname -r)
+  # Additional monitoring and system tools
+  - htop
+  - iotop
+  - ncdu
+  - ethtool
+  - sysstat
+  - prometheus-node-exporter
+  - collectd
+
+# User configuration
+users:
+  - name: patrick
+    groups: sudo, www-data
+    lock_passwd: true  # Changed to true to enforce SSH-only access
+    shell: /bin/bash
+    ssh-authorized-keys:
+      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFN75CnuOz7YXaJipTFxWMVDgm35heu64JKN1QL+Z84+ patrick@korczewski.de
+
+# SSH Configuration
+write_files:
+  - path: /etc/ssh/sshd_config
+    content: |
+      Match Group sftp-only
+          ForceCommand internal-sftp
+          ChrootDirectory %h/www
+          PermitTunnel no
+          AllowAgentForwarding no
+          AllowTcpForwarding no
+          X11Forwarding no
+    append: true
+    
+  # K3s system configurations
+  - path: /etc/sysctl.d/99-kubernetes.conf
+    content: |
+      # Basic K8s requirements
+      net.bridge.bridge-nf-call-iptables = 1
+      net.ipv4.ip_forward = 1
+      net.bridge.bridge-nf-call-ip6tables = 1
+      # Resource limits
+      fs.inotify.max_user_instances = 512
+      fs.inotify.max_user_watches = 524288
+      vm.max_map_count = 262144
+      # Additional performance optimizations
+      net.ipv4.conf.all.forwarding = 1
+      net.ipv4.neigh.default.gc_thresh1 = 4096
+      net.ipv4.neigh.default.gc_thresh2 = 8192
+      net.ipv4.neigh.default.gc_thresh3 = 16384
+
+  - path: /etc/modules-load.d/k8s.conf
+    content: |
+      br_netfilter
+      overlay
+      
+  # Script to install k3s
+  - path: /home/patrick/scripts/install-k3s.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      
+      # Generate a random token
+      export K3S_TOKEN=$(head -c48 /dev/urandom | base64)
+      
+      # Get the Hetzner floating IP if available
+      FLOATING_IP=$(curl -s http://169.254.169.254/hetzner/v1/metadata/floating-ips/0/ip || echo "")
+      TLS_SANS="--tls-san $(hostname -I | cut -d' ' -f1)"
+      if [ ! -z "$FLOATING_IP" ]; then
+          TLS_SANS="$TLS_SANS --tls-san $FLOATING_IP"
+      fi
+      
+      # Install K3s with optimized configuration
+      export INSTALL_K3S_EXEC="server \
+        --cluster-init \
+        --disable traefik \
+        --disable servicelb \
+        --node-name=$(hostname) \
+        $TLS_SANS \
+        --flannel-backend=wireguard"
+      
+      curl -sfL https://get.k3s.io | sh -
+
+  # Node cleanup script
+  - path: /home/patrick/scripts/node-cleanup.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      kubectl drain $(hostname) --ignore-daemonsets --delete-emptydir-data
+      kubectl delete node $(hostname)
+      systemctl stop k3s
+      rm -rf /var/lib/rancher/k3s/server
+
+# System configurations and security
+runcmd:
+  # Configure nano
+  - sed -i 's/[# ]*set tabsize 8/set tabsize 4/g' /etc/nanorc
+
+  # Configure SSH
+  - sed -i 's/[#]*Port 22/Port 5822/g' /etc/ssh/sshd_config
+  - sed -i 's/#HostKey \/etc\/ssh\/ssh_host_ed25519_key/HostKey \/etc\/ssh\/ssh_host_ed25519_key/g' /etc/ssh/sshd_config
+  - sed -i 's/[#]*PermitRootLogin yes/PermitRootLogin prohibit-password/g' /etc/ssh/sshd_config
+  - sed -i 's/[#]*PasswordAuthentication yes/PasswordAuthentication no/g' /etc/ssh/sshd_config
+  - /etc/init.d/ssh restart
+
+  # Configure Firewall
+  - ufw default deny incoming
+  - ufw default allow outgoing
+  - ufw allow 80/tcp
+  - ufw allow 443/tcp
+  - ufw limit 5822/tcp
+  # K3s required ports
+  - ufw allow 6443/tcp         # Kubernetes API Server
+  - ufw allow 8472/udp         # Flannel VXLAN
+  - ufw allow 10250:10252/tcp  # Kubelet API, kube-scheduler, kube-controller-manager
+  - ufw allow 30000:32767/tcp  # NodePort Services
+  - ufw allow 2379:2380/tcp    # etcd
+  - ufw allow 51820/udp        # WireGuard
+  - ufw enable
+
+  # Load kernel modules for k3s
+  - modprobe br_netfilter
+  - modprobe overlay
+  - sysctl --system
+
+  # Configure .bashrc for patrick
+  - sed -i -E 's/secure_path="(.*)"/secure_path="\1:\/home\/patrick\/scripts"/g' /etc/sudoers
+  - sed -i 's/($debian_chroot)}\\u\@\\h:\\/($debian_chroot)}\\u\@$(hostname -I | cut -d " " -f 1):\\/g' /home/patrick/.bashrc
+  - sed -i 's/($debian_chroot)}\\\[\\033\[01;32m\\\]\\u\@\\h/($debian_chroot)}\\\[\\033\[01;34m\\\]\\u\@$(hostname -I | cut -d " " -f 1)/g' /home/patrick/.bashrc
+  - echo "alias update='sudo -- sh -c \"apt update; apt upgrade -y; apt dist-upgrade -y; apt autoremove -y; apt autoclean -y\"'" >> /home/patrick/.bashrc
+  - echo "alias shutdown-r='sudo shutdown -r now'" >> /home/patrick/.bashrc
+  - echo "export PATH=$PATH:/home/patrick/scripts" >> /home/patrick/.bashrc
+  
+  # K3s convenience aliases
+  - echo "alias k='kubectl'" >> /home/patrick/.bashrc
+  - echo "source <(kubectl completion bash)" >> /home/patrick/.bashrc
+  - echo "complete -o default -F __start_kubectl k" >> /home/patrick/.bashrc
+
+  # Setup WireGuard with automatic key generation
+  - mkdir -p /etc/wireguard
+  - wg genkey | tee /etc/wireguard/private.key | wg pubkey > /etc/wireguard/public.key
+  - chmod 600 /etc/wireguard/private.key
+  - |
+    cat > /etc/wireguard/wg0.conf << EOF
+    [Interface]
+    PrivateKey = $(cat /etc/wireguard/private.key)
+    Address = 10.0.0.1/24
+    ListenPort = 51820
+    
+    # Peers will be added dynamically
+    EOF
+  - chmod 600 /etc/wireguard/wg0.conf
+
+  # Create scripts directory
+  - mkdir -p /home/patrick/scripts
+  - chown patrick:patrick /home/patrick/scripts
+
+  # Auto-mount additional volumes
+  - |
+    for drive in $(lsblk -dpno name | grep -v $(mount | grep " / " | cut -d" " -f1)); do
+      if ! grep -q "$drive" /etc/fstab; then
+        mkfs.ext4 $drive
+        uuid=$(blkid -s UUID -o value $drive)
+        mkdir -p /mnt/data-$(basename $drive)
+        echo "UUID=$uuid /mnt/data-$(basename $drive) ext4 defaults,nofail 0 2" >> /etc/fstab
+      fi
+    done
+  - mount -a
+
+  # Configure container runtime settings
+  - mkdir -p /etc/systemd/system/docker.service.d
+  - |
+    cat > /etc/sysctl.d/99-kubernetes-cri.conf << EOF
+    net.bridge.bridge-nf-call-iptables  = 1
+    net.ipv4.ip_forward                 = 1
+    net.bridge.bridge-nf-call-ip6tables = 1
+    EOF
+  - sysctl --system
